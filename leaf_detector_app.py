@@ -1,198 +1,161 @@
-# Live Leaf Disease, Dryness & Pest Detection App
-# Built with Streamlit + YOLOv8 for real-time detection
+"""
+🐛 Pest Detection App - Live Camera + Image Upload
+Uses YOUR trained YOLOv8 model (models/best.pt)
+By Madhurya Batabyal
+"""
 
 import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
+import tempfile
 
-# Try importing YOLOv8
+# YOLOv8
 try:
     from ultralytics import YOLO
     YOLO_AVAILABLE = True
 except ImportError:
     YOLO_AVAILABLE = False
-    st.warning("YOLOv8 not available. Install with: pip install ultralytics")
 
-# Page configuration
+# Page config
 st.set_page_config(
-    page_title="🌿 Live Leaf Disease Detector",
-    page_icon="🌿",
+    page_title="🐛 Pest Detection",
+    page_icon="🐛",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("🌿 Live Leaf Disease & Pest Detection System")
-st.markdown("Real-time detection of leaf diseases, dryness, and pest infestations using AI")
+st.title("🐛 Real-time Pest Detection System")
+st.markdown("**Detect pests on plants using live camera or uploaded images**")
+st.markdown("*Powered by custom YOLOv8 model (trained on 23K+ images)*")
 
-# Sidebar configuration
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ Configuration")
-
-    detection_mode = st.selectbox(
-        "Select Detection Mode",
-        ["Upload Image", "Demo Mode"]
+    st.header("⚙️ Detection Settings")
+    
+    # Model selection
+    model_path = st.selectbox(
+        "Model",
+        ["models/best.pt (Custom Pest Model)", "yolov8n.pt (Default)"],
+        index=0
     )
-
-    if YOLO_AVAILABLE:
-        model_type = st.selectbox(
-            "Model Type",
-            ["Custom Leaf Model (best.pt)", "YOLOv8n COCO (default)"]
-        )
-        confidence_threshold = st.slider(
-            "Confidence Threshold", 0.1, 1.0, 0.5, 0.05
-        )
-
-    show_statistics = st.checkbox("Show Detection Statistics", value=True)
-
+    
+    conf_threshold = st.slider("Confidence", 0.1, 1.0, 0.4, 0.05)
+    
     st.markdown("---")
-    st.markdown("### 📚 Model Information")
-    st.markdown("""
-    **Supported (custom model):**
-    - 🦠 Leaf Diseases (blight, spots, etc.)
-    - ✅ Healthy Leaves
-    """)
+    st.markdown("### 📊 Stats")
+    if 'detections' in st.session_state:
+        st.metric("Total Pests", st.session_state.detections)
 
-# Load model lazily and cache it
+# Load model (cached)
 @st.cache_resource
-def load_model(model_type: str):
+def load_model(path):
     if not YOLO_AVAILABLE:
         return None
-
-    if model_type == "Custom Leaf Model (best.pt)":
-        # YOUR TRAINED WEIGHTS (make sure this file exists)
-        model_path = "models/best.pt"
-    else:
-        # Fallback to generic YOLOv8
-        model_path = "yolov8n.pt"
-
     try:
-        model = YOLO(model_path)
+        model = YOLO(path)
+        st.success(f"✅ Loaded {path}")
         return model
     except Exception as e:
-        st.error(f"Error loading model '{model_path}': {e}")
+        st.error(f"❌ Failed to load {path}: {e}")
         return None
 
-def process_frame(frame, model=None, conf=0.5):
-    """Run YOLO on a single frame."""
-    if model and YOLO_AVAILABLE:
-        results = model(frame, conf=conf)
-        annotated_frame = results[0].plot()
-        return annotated_frame, results[0]
+def process_image(image, model, conf):
+    """Run YOLO detection on image."""
+    frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    
+    if model:
+        results = model(frame, conf=conf, verbose=False)
+        annotated = results[0].plot()
+        detections = len(results[0].boxes) if results[0].boxes is not None else 0
+        
+        # Update stats
+        if 'detections' not in st.session_state:
+            st.session_state.detections = 0
+        st.session_state.detections = detections
+        
+        return cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), detections, results
     else:
-        return frame, None
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), 0, None
 
-def extract_detections(results):
-    """Extract detection count + labels."""
-    if results is None or not hasattr(results, "boxes"):
-        return {"total": 0, "labels": []}
+# Main tabs
+tab1, tab2 = st.tabs(["📷 Live Camera", "🖼️ Upload Image"])
 
-    labels = []
-    for box in results.boxes:
-        if hasattr(box, "cls") and hasattr(box, "conf"):
-            cls_id = int(box.cls)
-            conf = float(box.conf)
-            name = results.names.get(cls_id, f"class_{cls_id}")
-            labels.append((name, conf))
+with tab1:
+    st.header("Live Pest Detection")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        camera_input = st.camera_input("🖥️ Take photo with camera")
+        
+        if camera_input:
+            image = Image.open(camera_input)
+            
+            model = load_model(model_path)
+            result_img, num_detections, results = process_image(image, model, conf_threshold)
+            
+            st.image(result_img, caption=f"Pest Detection Results ({num_detections} pests)", use_column_width=True)
+            
+            if num_detections > 0 and results:
+                st.markdown("### 🐛 Detected Pests:")
+                for i, box in enumerate(results[0].boxes):
+                    cls_id = int(box.cls)
+                    conf = float(box.conf)
+                    name = results[0].names[cls_id]
+                    st.write(f"**{name}: {conf:.1%}**")
+    
+    with col2:
+        st.info("👈 Take photo → see pests instantly!")
+        if 'detections' in st.session_state:
+            st.metric("Session Pests", st.session_state.detections)
 
-    return {"total": len(labels), "labels": labels}
-
-# Main interface
-if detection_mode == "Upload Image":
-    st.markdown("### 📷 Image Upload & Analysis")
-
+with tab2:
+    st.header("Upload Pest Images")
+    
     uploaded_file = st.file_uploader(
-        "Choose a leaf image",
-        type=['jpg', 'jpeg', 'png', 'bmp'],
-        help="Upload a clear image of a plant leaf"
+        "Upload leaf/plant image",
+        type=['jpg', 'jpeg', 'png', 'bmp']
     )
-
+    
     if uploaded_file:
-        image = Image.open(uploaded_file).convert("RGB")
-        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
+        image = Image.open(uploaded_file)
+        
         col1, col2 = st.columns([2, 1])
-
+        
         with col1:
-            st.markdown("#### Original Image")
-            st.image(image, use_column_width=True)
-
-            if YOLO_AVAILABLE:
-                st.markdown("#### Analysis Results")
-
-                model = load_model(model_type)
-                if model is None:
-                    st.stop()
-
-                try:
-                    annotated_frame, results = process_frame(
-                        frame,
-                        model=model,
-                        conf=confidence_threshold
-                    )
-                    st.image(
-                        cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
-                        caption=f"Detection Results ({model_type})",
-                        use_column_width=True
-                    )
-                except Exception as e:
-                    st.error(f"Error during inference: {e}")
-                    results = None
-            else:
-                st.info("Install YOLOv8: pip install ultralytics")
-                results = None
-
+            model = load_model(model_path)
+            result_img, num_detections, results = process_image(image, model, conf_threshold)
+            
+            st.image(result_img, caption=f"Detection Results ({num_detections} pests)", use_column_width=True)
+        
         with col2:
-            if show_statistics:
-                st.markdown("#### Findings")
+            st.metric("Pests Found", num_detections)
+            
+            if num_detections > 0 and results:
+                st.markdown("### Detection Details:")
+                for box in results[0].boxes:
+                    cls_id = int(box.cls)
+                    conf = float(box.conf)
+                    name = results[0].names[cls_id]
+                    st.success(f"{name}: {conf:.1%}")
 
-                det = extract_detections(results)
-                st.metric("Total Detections", det["total"])
+# Demo section
+if not YOLO_AVAILABLE:
+    st.error("Install YOLOv8: `pip install ultralytics`")
+    st.stop()
 
-                if det["total"] > 0:
-                    for name, conf in det["labels"]:
-                        st.write(f"- **{name}** ({conf:.1%})")
-                else:
-                    st.info("No objects detected with current threshold.")
-
-else:  # Demo Mode
-    st.markdown("### 🎯 Demo Mode - Sample Output")
-    demo_image = np.ones((480, 640, 3), dtype=np.uint8) * 240
-
-    cv2.putText(
-        demo_image,
-        "Demo Mode",
-        (180, 220),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.2,
-        (0, 0, 200),
-        3,
-    )
-    cv2.putText(
-        demo_image,
-        "Upload an image in 'Upload Image'",
-        (40, 270),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 100, 200),
-        2,
-    )
-
-    st.image(
-        cv2.cvtColor(demo_image, cv2.COLOR_BGR2RGB),
-        caption="Sample output (no model run)",
-        use_column_width=True
-    )
-    st.info("Switch to 'Upload Image' in the sidebar to use the model.")
-
-# Footer
 st.markdown("---")
 st.markdown("""
-**How this works**
+### 🚀 About This App
 
-- Uses a YOLOv8 model for object detection  
-- For production, the app loads your trained weights from `models/best.pt`  
-- Deployed via Streamlit (locally or on Streamlit Cloud)
+**Model:** Custom YOLOv8 trained on 23K+ plant disease images  
+**Dataset:** [Roboflow Plant Disease Detection](https://universe.roboflow.com/floragenic-9v9os/plant-disease-detection-3anip/1)  
+**Features:** Live camera + image upload + real-time stats  
 
-*Built by Madhurya Batabyal – Leaf Disease Detector*
+**By Madhurya Batabyal | Portfolio Project 2026**
 """)
+
+# Initialize session state
+if 'detections' not in st.session_state:
+    st.session_state.detections = 0
